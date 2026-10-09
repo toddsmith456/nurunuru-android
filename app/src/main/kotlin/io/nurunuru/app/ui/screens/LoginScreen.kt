@@ -1,0 +1,725 @@
+package io.nurunuru.app.ui.screens
+
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.*
+import androidx.compose.ui.text.style.TextAlign
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import io.nurunuru.app.R
+import io.nurunuru.app.data.ExternalSigner
+import io.nurunuru.app.ui.components.SignUpModal
+import io.nurunuru.app.ui.components.UserAvatar
+import io.nurunuru.app.ui.theme.LineGreen
+import io.nurunuru.app.ui.theme.LocalNuruColors
+import io.nurunuru.app.viewmodel.AuthState
+import io.nurunuru.app.viewmodel.AuthViewModel
+import io.nurunuru.app.viewmodel.ReferralInvitePreview
+import io.nurunuru.app.data.NostrKeyUtils
+
+@Composable
+fun LoginScreen(
+    viewModel: AuthViewModel
+) {
+    val authState by viewModel.authState.collectAsState()
+    val referralInvite by viewModel.referralInvitePreview.collectAsState()
+    val nuruColors = LocalNuruColors.current
+
+    var nsecInput by remember { mutableStateOf("") }
+    var showKey by remember { mutableStateOf(false) }
+    var showSignUp by remember { mutableStateOf(false) }
+    var showNsecLogin by remember { mutableStateOf(false) }
+    var showOtherMethods by remember { mutableStateOf(false) }
+    var isCompletingSignUp by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    var showTermsDialog by remember { mutableStateOf(false) }
+    var pendingTermsAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    fun requireTerms(action: () -> Unit) {
+        if (viewModel.prefs.hasAcceptedTerms) action() else {
+            pendingTermsAction = action
+            showTermsDialog = true
+        }
+    }
+
+    val amberLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val data = result.data
+            val pubkey = data?.getStringExtra("signature") ?: data?.getStringExtra("pubKey") ?: data?.getStringExtra("result")
+            if (pubkey != null) {
+                viewModel.loginWithAmber(pubkey)
+            }
+        }
+    }
+
+    val isLoading = authState is AuthState.Checking
+    val errorMsg = (authState as? AuthState.Error)?.message
+
+    // Match Web version's initial loading state. During signup completion,
+    // keep the login/signup UI covered until MainActivity switches to MainScreen.
+    if ((isLoading && !showNsecLogin && !showSignUp) || isCompletingSignUp) {
+        Box(
+            modifier = Modifier.fillMaxSize().background(nuruColors.bgPrimary),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                val infiniteTransition = rememberInfiniteTransition(label = "logo_pulse")
+                val scale by infiniteTransition.animateFloat(
+                    initialValue = 0.95f,
+                    targetValue = 1.05f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1000, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "scale"
+                )
+
+                Box(
+                    modifier = Modifier
+                        .size(80.dp)
+                        .graphicsLayer(scaleX = scale, scaleY = scale)
+                        .clip(RoundedCornerShape(20.dp))
+                ) {
+                    androidx.compose.foundation.Image(
+                        painter = painterResource(id = R.drawable.logo),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Spacer(modifier = Modifier.height(24.dp))
+                Text(
+                    text = "Loading...",
+                    color = nuruColors.textTertiary,
+                    fontSize = 14.sp
+                )
+            }
+        }
+        return
+    }
+
+    if (showSignUp) {
+        SignUpModal(
+            viewModel = viewModel,
+            onClose = { if (!isCompletingSignUp) showSignUp = false },
+            onSuccess = {
+                isCompletingSignUp = true
+                // Keep SignUpModal visible as an opaque full-screen screen until
+                // AuthState.LoggedIn replaces LoginScreen with MainScreen.
+            }
+        )
+        return
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(nuruColors.bgPrimary),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(32.dp)
+        ) {
+            // Logo / title
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(112.dp)
+                        .shadow(12.dp, RoundedCornerShape(32.dp))
+                        .clip(RoundedCornerShape(32.dp))
+                        .background(nuruColors.bgSecondary)
+                ) {
+                    androidx.compose.foundation.Image(
+                        painter = painterResource(id = R.drawable.logo),
+                        contentDescription = "Nurunuru",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+
+                Text(
+                    text = "Nurunuru",
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = nuruColors.textPrimary
+                )
+            }
+
+            referralInvite?.let {
+                ReferralInviteCard(invite = it, onDismiss = { viewModel.dismissReferralInvite() })
+            }
+
+            // Options
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (!showNsecLogin) {
+                    // Sign Up Button
+                    Button(
+                        onClick = { requireTerms { showSignUp = true } },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                            .shadow(8.dp, RoundedCornerShape(20.dp), spotColor = LineGreen.copy(alpha = 0.1f)),
+                        colors = ButtonDefaults.buttonColors(containerColor = LineGreen),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.PersonAdd,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Text("Sign up", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (remember { viewModel.nosskeyManager.isPlatformSupported(context) }) {
+                        Button(
+                            onClick = {
+                                requireTerms {
+                                    val act = context as? ComponentActivity
+                                    if (act != null) viewModel.loginWithPasskey(act)
+                                    else android.widget.Toast.makeText(context, "Passkey login must be done from the app screen", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = LineGreen.copy(alpha = 0.1f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, LineGreen),
+                            shape = RoundedCornerShape(20.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Icon(Icons.Default.Fingerprint, contentDescription = null, modifier = Modifier.size(20.dp), tint = LineGreen)
+                                Text("Log in with passkey", fontSize = 16.sp, color = LineGreen, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Login Button (Combined)
+                    Button(
+                        onClick = { requireTerms { showNsecLogin = true } },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = nuruColors.bgSecondary),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.Login,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = nuruColors.textPrimary
+                            )
+                            Text("Log in", fontSize = 16.sp, color = nuruColors.textPrimary)
+                        }
+                    }
+                } else {
+                    // Login options: nsec (primary) and others (collapsible)
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        // 1. Primary: Secret Key (nsec)
+                        OutlinedTextField(
+                            value = nsecInput,
+                            onValueChange = {
+                                nsecInput = it
+                                if (errorMsg != null) viewModel.clearError()
+                            },
+                            label = { Text("Private key (nsec1...)") },
+                            placeholder = { Text("nsec1...") },
+                            visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                                imeAction = ImeAction.Done
+                            ),
+                            trailingIcon = {
+                                IconButton(onClick = { showKey = !showKey }) {
+                                    Icon(
+                                        imageVector = if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (showKey) "Hide" else "Show",
+                                        tint = nuruColors.textTertiary
+                                    )
+                                }
+                            },
+                            isError = errorMsg != null,
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = LineGreen,
+                                focusedLabelColor = LineGreen,
+                                cursorColor = LineGreen,
+                                unfocusedBorderColor = nuruColors.bgTertiary
+                            ),
+                            shape = RoundedCornerShape(16.dp)
+                        )
+
+                        AnimatedVisibility(visible = errorMsg != null) {
+                            Text(
+                                text = errorMsg ?: "",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+
+                        Button(
+                            onClick = { requireTerms { viewModel.login(nsecInput) } },
+                            enabled = nsecInput.isNotBlank() && !isLoading,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = LineGreen,
+                                disabledContainerColor = LineGreen.copy(alpha = 0.3f)
+                            ),
+                            shape = RoundedCornerShape(20.dp)
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("Log in", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            }
+                        }
+
+                        // 2. Collapsible: Other Login Methods
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            TextButton(
+                                onClick = { showOtherMethods = !showOtherMethods },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        "Other login methods",
+                                        color = nuruColors.textTertiary,
+                                        fontSize = 14.sp
+                                    )
+                                    Icon(
+                                        imageVector = if (showOtherMethods) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = null,
+                                        tint = nuruColors.textTertiary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            AnimatedVisibility(
+                                visible = showOtherMethods,
+                                enter = expandVertically() + fadeIn(),
+                                exit = shrinkVertically() + fadeOut()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(top = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                                ) {
+                                    // Passkey login button. Show on supported devices; if no credential exists,
+                                    // AuthViewModel shows the explanatory error.
+                                    val supportsPasskey = remember { viewModel.nosskeyManager.isPlatformSupported(context) }
+                                    if (supportsPasskey) {
+                                        Button(
+                                            onClick = {
+                                                requireTerms {
+                                                    val act = context as? ComponentActivity
+                                                    if (act != null) {
+                                                        viewModel.loginWithPasskey(act)
+                                                    } else {
+                                                        android.widget.Toast.makeText(
+                                                            context,
+                                                            "Passkey login must be done from the app screen",
+                                                            android.widget.Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
+                                                }
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(56.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = LineGreen.copy(alpha = 0.1f)),
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, LineGreen),
+                                            shape = RoundedCornerShape(16.dp)
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Fingerprint,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(20.dp),
+                                                    tint = LineGreen
+                                                )
+                                                Text("Log in with passkey", fontSize = 16.sp, color = LineGreen, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+
+                                    // External Signer Button (NIP-55)
+                                    Button(
+                                        onClick = {
+                                            requireTerms {
+                                                try {
+                                                    amberLauncher.launch(ExternalSigner.createGetPublicKeyIntent(context))
+                                                } catch (e: Exception) {
+                                                    android.widget.Toast.makeText(context, "No external signer app found", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(56.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = nuruColors.bgSecondary),
+                                        shape = RoundedCornerShape(16.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                            Icon(
+                                                imageVector = Icons.Default.AppShortcut,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(20.dp),
+                                                tint = nuruColors.textPrimary
+                                            )
+                                            Text("Log in with an external app (Amber, etc.)", fontSize = 16.sp, color = nuruColors.textPrimary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        TextButton(
+                            onClick = {
+                                showNsecLogin = false
+                                showOtherMethods = false
+                            },
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        ) {
+                            Text("Cancel", color = nuruColors.textTertiary)
+                        }
+                    }
+                }
+            }
+
+            // Footer links
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Terms of service",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = nuruColors.textTertiary,
+                        modifier = Modifier.clickable { uriHandler.openUri("https://tami1a84.github.io/null--nostr/terms.html") }
+                    )
+                    Text(
+                        text = "Privacy policy",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = nuruColors.textTertiary,
+                        modifier = Modifier.clickable { uriHandler.openUri("https://tami1a84.github.io/null--nostr/privacy.html") }
+                    )
+                }
+                Text(
+                    text = "Official website",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = nuruColors.textTertiary.copy(alpha = 0.85f),
+                    modifier = Modifier.clickable { uriHandler.openUri("https://tami1a84.github.io/null--nostr/") }
+                )
+            }
+        }
+    }
+
+    if (showTermsDialog) {
+        TermsAgreementScreen(
+            onOpenTerms = { uriHandler.openUri("https://tami1A84.github.io/null--nostr/terms.html") },
+            onAgree = {
+                viewModel.prefs.hasAcceptedTerms = true
+                showTermsDialog = false
+                pendingTermsAction?.invoke()
+                pendingTermsAction = null
+            },
+            onCancel = {
+                showTermsDialog = false
+                pendingTermsAction = null
+            }
+        )
+    }
+
+}
+
+@Composable
+private fun TermsAgreementScreen(
+    onOpenTerms: () -> Unit,
+    onAgree: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val nuruColors = LocalNuruColors.current
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = nuruColors.bgPrimary
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onCancel) {
+                    Text(
+                        text = "Close",
+                        color = nuruColors.textSecondary,
+                        fontSize = 14.sp
+                    )
+                }
+                Text(
+                    text = "Terms of service",
+                    modifier = Modifier.weight(1f),
+                    color = nuruColors.textPrimary,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.width(64.dp))
+            }
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "Agree to the Terms of Service",
+                    color = nuruColors.textPrimary,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "Before using Nurunuru, please agree to the following so that user-posted content can be used safely.",
+                    color = nuruColors.textSecondary,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+
+                TermsNoticeCard(
+                    icon = Icons.Default.Security,
+                    title = "Zero-tolerance policy",
+                    bodyText = "We do not tolerate inappropriate content, harassment, discrimination, threats, spam, illegal activity, or abusive users."
+                )
+
+                TermsNoticeCard(
+                    icon = Icons.Default.Flag,
+                    title = "Report feature",
+                    bodyText = "If you find an inappropriate post or profile, or abusive behavior, you can report it from within the app."
+                )
+
+                TermsNoticeCard(
+                    icon = Icons.Default.PersonOff,
+                    title = "Block feature",
+                    bodyText = "You can block annoying or unwanted users from within the app."
+                )
+
+                Surface(
+                    onClick = onOpenTerms,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = nuruColors.bgSecondary,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Description,
+                            contentDescription = null,
+                            tint = LineGreen,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Open the full Terms of Service",
+                            modifier = Modifier.weight(1f),
+                            color = LineGreen,
+                            fontSize = 14.sp
+                        )
+                        Icon(
+                            imageVector = Icons.Default.OpenInNew,
+                            contentDescription = null,
+                            tint = LineGreen,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(nuruColors.bgPrimary)
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Button(
+                    onClick = onAgree,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = LineGreen),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Text(
+                        text = "Agree to the Terms and start",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+
+                TextButton(onClick = onCancel) {
+                    Text(
+                        text = "Do not agree",
+                        color = nuruColors.textTertiary,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TermsNoticeCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    bodyText: String
+) {
+    val nuruColors = LocalNuruColors.current
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = nuruColors.bgSecondary,
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = LineGreen,
+                modifier = Modifier
+                    .width(28.dp)
+                    .size(20.dp)
+            )
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = title,
+                    color = nuruColors.textPrimary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = bodyText,
+                    color = nuruColors.textSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun ReferralInviteCard(
+    invite: ReferralInvitePreview,
+    onDismiss: () -> Unit
+) {
+    val nuruColors = LocalNuruColors.current
+    val profile = invite.profile
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = nuruColors.bgSecondary,
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            UserAvatar(
+                pictureUrl = profile?.picture,
+                displayName = profile?.displayedName ?: "",
+                size = 48.dp
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("You're invited", color = LineGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    profile?.displayedName ?: NostrKeyUtils.shortenPubkey(invite.pubkeyHex, 8),
+                    color = nuruColors.textPrimary,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+                Text(
+                    if (invite.isLoading) "Loading profile..." else "Starting will follow this user",
+                    color = nuruColors.textSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 2
+                )
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, contentDescription = "Close invitation", tint = nuruColors.textTertiary)
+            }
+        }
+    }
+}

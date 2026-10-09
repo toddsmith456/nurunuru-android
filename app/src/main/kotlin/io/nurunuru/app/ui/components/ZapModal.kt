@@ -1,0 +1,241 @@
+package io.nurunuru.app.ui.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import io.nurunuru.app.data.NostrRepository
+import io.nurunuru.app.data.models.ScoredPost
+import io.nurunuru.app.data.*
+import io.nurunuru.app.ui.theme.LocalNuruColors
+import kotlinx.coroutines.launch
+
+@Composable
+private fun PresetButton(
+    preset: Int,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val nuruColors = LocalNuruColors.current
+    Surface(
+        modifier = modifier.clickable { onClick() },
+        shape = RoundedCornerShape(20.dp),
+        color = if (isSelected) Color(0xFFFFC107) else nuruColors.bgSecondary,
+        contentColor = if (isSelected) Color.Black else nuruColors.textPrimary
+    ) {
+        Text(
+            text = "⚡$preset",
+            modifier = Modifier.padding(vertical = 8.dp),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ZapModal(
+    post: ScoredPost,
+    repository: NostrRepository,
+    onDismiss: () -> Unit,
+    onSuccess: (String) -> Unit
+) {
+    val nuruColors = LocalNuruColors.current
+    val profile = post.profile
+    val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+
+    val defaultAmount = remember { repository.getDefaultZapAmount().toString() }
+    var amount by remember { mutableStateOf(defaultAmount) }
+    var comment by remember { mutableStateOf("") }
+    var isZapping by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val presetAmounts = listOf(21, 100, 500, 1000, 5000, 10000)
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = nuruColors.bgPrimary
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // Header
+                Column(
+                    modifier = Modifier.padding(24.dp, 24.dp, 24.dp, 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "⚡ Send Zap",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = nuruColors.textTertiary)
+                        }
+                    }
+                    Text(
+                        text = profile?.displayedName ?: "Anonymous",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = nuruColors.textSecondary
+                    )
+                }
+
+                HorizontalDivider(color = nuruColors.border, thickness = 0.5.dp)
+
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Amount
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Amount (₿)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = nuruColors.textSecondary
+                        )
+                        OutlinedTextField(
+                            value = amount,
+                            onValueChange = { if (it.all { c -> c.isDigit() }) amount = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFFFFC107),
+                                unfocusedBorderColor = nuruColors.border,
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent
+                            ),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    // Presets
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val rows = presetAmounts.chunked(3)
+                        rows.forEach { row ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                row.forEach { preset ->
+                                    PresetButton(
+                                        preset = preset,
+                                        isSelected = amount == preset.toString(),
+                                        onClick = { amount = preset.toString() },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (row.size < 3) {
+                                    repeat(3 - row.size) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Comment
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Comment (optional)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = nuruColors.textSecondary
+                        )
+                        OutlinedTextField(
+                            value = comment,
+                            onValueChange = { if (it.length <= 100) comment = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Zap!", fontSize = 14.sp) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFFFFC107),
+                                unfocusedBorderColor = nuruColors.border,
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent
+                            ),
+                            maxLines = 2,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    if (errorMessage != null) {
+                        Text(
+                            text = errorMessage!!,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    // Action
+                    Button(
+                        onClick = {
+                            val amountSats = amount.toLongOrNull() ?: 0L
+                            if (amountSats <= 0) {
+                                errorMessage = "Please enter a valid amount"
+                                return@Button
+                            }
+                            if (profile?.lud16 == null) {
+                                errorMessage = "No Lightning address set"
+                                return@Button
+                            }
+
+                            isZapping = true
+                            errorMessage = null
+                            scope.launch {
+                                try {
+                                    val invoice = repository.fetchLightningInvoice(profile.lud16, amountSats, comment)
+                                    if (invoice != null) {
+                                        clipboardManager.setText(AnnotatedString(invoice))
+                                        onSuccess(invoice)
+                                    } else {
+                                        errorMessage = "Failed to create invoice"
+                                    }
+                                } catch (e: Exception) {
+                                    errorMessage = "An error occurred: ${e.message}"
+                                } finally {
+                                    isZapping = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFC107), contentColor = Color.Black),
+                        shape = RoundedCornerShape(26.dp),
+                        enabled = !isZapping && amount.isNotBlank()
+                    ) {
+                        if (isZapping) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.Black, strokeWidth = 2.dp)
+                        } else {
+                            Text("⚡ ₿${amount.ifBlank { "0"}} Create invoice", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,21 @@
+# Gradle / Android build output
+.gradle/
+build/
+*/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing keys
+*.keystore
+*.jks
+
+# Rust build output
+rust-engine/target/
+*.node
+
+# OS / editor
+.DS_Store

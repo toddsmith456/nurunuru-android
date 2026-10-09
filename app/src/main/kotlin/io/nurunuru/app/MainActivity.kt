@@ -1,0 +1,165 @@
+package io.nurunuru.app
+
+import android.content.Intent
+import android.os.Bundle
+import java.lang.ref.WeakReference
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.viewmodel.compose.viewModel
+import io.nurunuru.app.data.ExternalSigner
+import io.nurunuru.app.ui.screens.BiometricUnlockScreen
+import io.nurunuru.app.ui.screens.LoginScreen
+import io.nurunuru.app.ui.screens.MainScreen
+import io.nurunuru.app.ui.theme.NuruNuruTheme
+import io.nurunuru.app.viewmodel.AuthState
+import io.nurunuru.app.viewmodel.AuthViewModel
+// import rust.nostr.android.signer.proxy.NostrAndroidSignerProxyServer
+
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        private var instanceRef: WeakReference<MainActivity>? = null
+        val instance: MainActivity? get() = instanceRef?.get()
+    }
+
+    private var authViewModel: AuthViewModel? = null
+    private lateinit var signerLauncher: ActivityResultLauncher<Intent>
+    // private var signerProxy: NostrAndroidSignerProxyServer? = null
+
+    fun launchExternalSigner(intent: Intent) {
+        signerLauncher.launch(intent)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // installSplashScreen は super.onCreate() より前に呼ぶ必要がある
+        val splashScreen = installSplashScreen()
+        super.onCreate(savedInstanceState)
+        instanceRef = WeakReference(this)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.BLACK),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.BLACK)
+        )
+
+        // Official NIP-55 Proxy Server from rust-nostr
+        /*
+        signerProxy = NostrAndroidSignerProxyServer(
+            context = applicationContext,
+            activity = this,
+            uniqueName = "nurunuru-nostr"
+        )
+        signerProxy?.start()
+        */
+
+        signerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                android.util.Log.d("MainActivity", "Signer result OK: ${result.data?.extras?.keySet()?.joinToString()}")
+                ExternalSigner.onResult(result.data)
+            } else {
+                android.util.Log.w("MainActivity", "Signer result NOT OK: ${result.resultCode}")
+                ExternalSigner.onResult(null)
+            }
+        }
+
+        val app = application as NuruNuruApp
+
+        // AuthState.Checking の間はスプラッシュ画面を維持する。
+        // Checking → LoggedIn/LoggedOut/BiometricRequired に遷移した瞬間にスプラッシュが消える。
+        // これにより起動直後の白画面フラッシュとフレームドロップがスプラッシュで隠れる。
+        val authVmForSplash = androidx.lifecycle.ViewModelProvider(this)[AuthViewModel::class.java]
+        splashScreen.setKeepOnScreenCondition {
+            authVmForSplash.authState.value is AuthState.Checking
+        }
+
+        setContent {
+            NuruNuruTheme {
+                io.nurunuru.app.ui.components.ToastProvider {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        val viewModel: AuthViewModel = viewModel()
+                        authViewModel = viewModel
+                        val authState by viewModel.authState.collectAsState()
+
+                        // Handle initial intent if present
+                        LaunchedEffect(intent) {
+                            handleIntent(intent)
+                        }
+
+                        when (val state = authState) {
+                            is AuthState.LoggedIn -> MainScreen(
+                                pubkeyHex = state.pubkeyHex,
+                                hasInternalKey = state.hasInternalKey,
+                                keyManager = viewModel.keyManager,
+                                authViewModel = viewModel,
+                                app = app
+                            )
+
+                            is AuthState.BiometricRequired -> {
+                                // 生体認証が必要 → BiometricPrompt をShow
+                                BiometricUnlockScreen(viewModel = viewModel)
+                            }
+
+                            else -> LoginScreen(viewModel = viewModel)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    override fun onDestroy() {
+        if (instanceRef?.get() == this) instanceRef = null
+        // signerProxy?.stop()
+        // signerProxy = null
+        // Do not zeroize on configuration changes. Rotation/activity recreation keeps the
+        // user in AuthState.LoggedIn and immediately rebuilds NostrClient; clearing the
+        // in-memory key here makes Rust client initialization fail with
+        // "Key not available from SecureKeyManager" until the user relogs/re-authenticates.
+        // Real app/process shutdown can still clear process memory naturally; explicit wipe
+        // is handled by logout().
+        if (isFinishing) {
+            authViewModel?.keyManager?.zeroize()
+        }
+        super.onDestroy()
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        intent?.data?.let { uri ->
+            android.util.Log.d("MainActivity", "Handling deep link: $uri")
+            if (uri.scheme == "io.nurunuru.app" && uri.host == "login") {
+                val nsec = uri.getQueryParameter("nsec")
+                if (!nsec.isNullOrBlank()) {
+                    android.util.Log.d("MainActivity", "Found nsec in deep link, logging in...")
+                    authViewModel?.login(nsec)
+                }
+            } else if ((uri.scheme == "io.nurunuru.app" && uri.host == "profile") ||
+                ((uri.scheme == "https" || uri.scheme == "http") && uri.host == "www.nullnull.app" && uri.pathSegments.firstOrNull() == "p")
+            ) {
+                authViewModel?.handleProfileReferralDeepLink(uri)
+            } else if ((uri.scheme == "nurunuru" && uri.host == "event") ||
+                ((uri.scheme == "https" || uri.scheme == "http") && uri.host == "www.nullnull.app" && uri.pathSegments.firstOrNull() == "e")
+            ) {
+                authViewModel?.handleEventDeepLink(uri)
+            }
+        }
+    }
+}

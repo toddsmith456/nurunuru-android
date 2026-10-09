@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="com.nostr.signer.READ_DATABASE" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <queries>
+        <package android:name="com.greenart7c3.nostrsigner" />
+        <!-- Amber 5.x uses per-type authorities (dot-separated, uppercase).
+             Each must be declared so Android 11+ package visibility allows our
+             contentResolver.query() calls to reach them. Without these, Android
+             throws "Failed to find provider info" and returns a null cursor. -->
+        <provider android:authorities="com.greenart7c3.nostrsigner" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.SIGN_EVENT" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.sign_event" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.GET_PUBLIC_KEY" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.NIP04_ENCRYPT" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.NIP04_DECRYPT" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.NIP44_ENCRYPT" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.NIP44_DECRYPT" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.SIGN_MESSAGE" />
+        <provider android:authorities="com.greenart7c3.nostrsigner.PING" />
+        <provider android:authorities="com.nostr.signer" />
+        <provider android:authorities="com.nostr.signer.SIGN_EVENT" />
+        <provider android:authorities="com.nostr.signer.sign_event" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="nostrsigner" />
+        </intent>
+        <intent>
+            <action android:name="com.nostr.signer.GET_PUBLIC_KEY" />
+        </intent>
+        <intent>
+            <action android:name="com.nostr.signer.SIGN_EVENT" />
+        </intent>
+        <intent>
+            <action android:name="com.greenart7c3.nostr.signer.GET_PUBLIC_KEY" />
+        </intent>
+        <intent>
+            <action android:name="com.greenart7c3.nostr.signer.SIGN_EVENT" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".NuruNuruApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.NuruNuru"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="false"
+        android:enableOnBackInvokedCallback="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.NuruNuru.Starting"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep link support for login redirect -->
+            <intent-filter android:label="NuruNuru Login">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="io.nurunuru.app" android:host="login" />
+            </intent-filter>
+
+            <intent-filter android:label="NuruNuru Profile">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="io.nurunuru.app" android:host="profile" />
+            </intent-filter>
+
+            <intent-filter android:autoVerify="true" android:label="NuruNuru Profile Web">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="www.nullnull.app" android:pathPrefix="/p" />
+            </intent-filter>
+
+            <intent-filter android:label="NuruNuru Event">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nurunuru" android:host="event" />
+            </intent-filter>
+
+            <intent-filter android:autoVerify="true" android:label="NuruNuru Event Web">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="www.nullnull.app" android:pathPrefix="/e" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

@@ -1,0 +1,657 @@
+package io.nurunuru.app.ui.components
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
+import androidx.compose.material.icons.outlined.Settings
+import io.nurunuru.app.data.NostrRepository
+import io.nurunuru.app.data.models.NostrEvent
+import io.nurunuru.app.data.models.NostrKind
+import io.nurunuru.app.data.models.NotificationItem
+import io.nurunuru.app.data.models.UserProfile
+import io.nurunuru.app.data.models.ScoredPost
+import io.nurunuru.app.data.prefs.AppPreferences
+import io.nurunuru.app.data.prefs.NotificationSenderScope
+import io.nurunuru.app.data.*
+import io.nurunuru.app.ui.theme.LineGreen
+import io.nurunuru.app.ui.theme.LocalNuruColors
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+// ───────────────────────────────────────────────────────────────────────────
+// Notificationsタイプごとの見た目Settings
+// ───────────────────────────────────────────────────────────────────────────
+private data class NotifStyle(
+    val icon: ImageVector,
+    val color: Color,
+    val label: String
+)
+
+private val reactionStyle      = NotifStyle(Icons.Default.Favorite, Color(0xFFEF5350), "Reactions")
+private val emojiReactionStyle = NotifStyle(Icons.Default.EmojiEmotions, Color(0xFFFF9800), "Emoji reactions")
+private val zapStyle           = NotifStyle(Icons.Default.ElectricBolt, Color(0xFFFFC107), "Zap")
+private val repostStyle        = NotifStyle(Icons.Default.Repeat, Color(0xFF26A69A), "Reposts")
+private val replyStyle         = NotifStyle(Icons.AutoMirrored.Filled.Reply, LineGreen, "Reply")
+private val mentionStyle       = NotifStyle(Icons.Default.AlternateEmail, Color(0xFF42A5F5), "Mentions")
+private val badgeStyle         = NotifStyle(Icons.Default.EmojiEvents, Color(0xFFFFD700), "Badges")
+private val followStyle        = NotifStyle(Icons.Default.PersonAdd, LineGreen, "Follow")
+private val birthdayStyle      = NotifStyle(Icons.Default.Cake, Color(0xFFAB47BC), "Birthday")
+
+private fun styleFor(type: String) = when (type) {
+    "reaction"       -> reactionStyle
+    "emoji_reaction" -> emojiReactionStyle
+    "zap"            -> zapStyle
+    "repost"         -> repostStyle
+    "reply"          -> replyStyle
+    "mention"        -> mentionStyle
+    "badge"          -> badgeStyle
+    "follow"         -> followStyle
+    else             -> birthdayStyle
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// メインモーダル
+// ───────────────────────────────────────────────────────────────────────────
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NotificationModal(
+    repository: NostrRepository,
+    prefs: AppPreferences,
+    myPubkey: String,
+    onClose: () -> Unit,
+    onProfileClick: (String) -> Unit,
+    onNoteClick: (String, ScoredPost?) -> Unit = { _, _ -> }
+) {
+    val nuruColors = LocalNuruColors.current
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val pullRefreshState = rememberPullToRefreshState()
+
+    val cachedInitial = remember(myPubkey) { repository.getCachedNotifications(myPubkey) }
+    var notifications by remember { mutableStateOf(cachedInitial?.items ?: emptyList()) }
+    var profiles by remember { mutableStateOf(cachedInitial?.profiles ?: emptyMap()) }
+    var originalPosts by remember { mutableStateOf(cachedInitial?.originalPosts ?: emptyMap()) }
+    var loading by remember { mutableStateOf(cachedInitial == null) }
+    var pendingNew by remember { mutableStateOf<List<NotificationItem>>(emptyList()) }
+    var showKindSettings by remember { mutableStateOf(false) }
+    var enabledKinds by remember { mutableStateOf(prefs.notificationEnabledKinds) }
+    var emojiReactionEnabled by remember { mutableStateOf(prefs.notificationEmojiReactionEnabled) }
+    var senderScope by remember { mutableStateOf(prefs.notificationSenderScope) }
+
+    // プルリフレッシュ
+    if (pullRefreshState.isRefreshing) {
+        LaunchedEffect(Unit) {
+            try {
+                val fresh = repository.fetchNotifications(myPubkey, skipCache = true)
+                notifications = fresh.items
+                profiles = fresh.profiles
+                originalPosts = fresh.originalPosts
+                pendingNew = emptyList()
+            } catch (_: Exception) { }
+            pullRefreshState.endRefresh()
+        }
+    }
+
+    // 初回フェッチ + ライブポーリング（10sごと）
+    LaunchedEffect(Unit) {
+        try {
+            val result = repository.fetchNotifications(myPubkey, skipCache = cachedInitial != null)
+            notifications = result.items
+            profiles = result.profiles
+            originalPosts = result.originalPosts
+        } catch (e: Exception) {
+            android.util.Log.w("NotificationModal", "fetch failed: ${e.message}")
+        }
+        loading = false
+
+        while (true) {
+            delay(10_000)
+            try {
+                val fresh = repository.fetchNotifications(myPubkey, skipCache = true)
+                val existingIds = notifications.map { it.id }.toSet() +
+                                  pendingNew.map { it.id }.toSet()
+                val newItems = fresh.items.filter { it.id !in existingIds }
+                if (newItems.isNotEmpty()) {
+                    pendingNew = (newItems + pendingNew).distinctBy { it.id }
+                    profiles = fresh.profiles
+                    originalPosts = fresh.originalPosts
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
+    // NotificationskindSettings（iOS に合わせて全画面Show）
+    if (showKindSettings) {
+        Dialog(
+            onDismissRequest = { showKindSettings = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = nuruColors.bgPrimary
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Notification types",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            modifier = Modifier.weight(1f),
+                            color = nuruColors.textPrimary
+                        )
+                        TextButton(onClick = { showKindSettings = false }) {
+                            Text("Close", color = LineGreen)
+                        }
+                    }
+                    HorizontalDivider(color = nuruColors.border, thickness = 0.5.dp)
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp),
+                        contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        item {
+                            NotificationSwitchRow("Reactions (👍)", NostrKind.REACTION in enabledKinds) { checked ->
+                                val updated = if (checked) enabledKinds + NostrKind.REACTION else enabledKinds - NostrKind.REACTION
+                                enabledKinds = updated
+                                prefs.notificationEnabledKinds = updated
+                            }
+                        }
+                        item {
+                            NotificationSwitchRow("Emoji reactions", emojiReactionEnabled) { checked ->
+                                emojiReactionEnabled = checked
+                                prefs.notificationEmojiReactionEnabled = checked
+                            }
+                        }
+                        listOf(
+                            "Zap" to NostrKind.ZAP_RECEIPT,
+                            "Reposts" to NostrKind.REPOST,
+                            "Replies & mentions" to NostrKind.TEXT_NOTE,
+                            "Follow" to NostrKind.CONTACT_LIST,
+                            "Badges" to NostrKind.BADGE_AWARD
+                        ).forEach { (label, kind) ->
+                            item {
+                                NotificationSwitchRow(label, kind in enabledKinds) { checked ->
+                                    val updated = if (checked) enabledKinds + kind else enabledKinds - kind
+                                    enabledKinds = updated
+                                    prefs.notificationEnabledKinds = updated
+                                }
+                            }
+                        }
+                        item {
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = nuruColors.border)
+                            Text("Sender display", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = nuruColors.textPrimary)
+                        }
+                        NotificationSenderScope.values().forEach { scopeOption ->
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            senderScope = scopeOption
+                                            prefs.notificationSenderScope = scopeOption
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(
+                                        selected = senderScope == scopeOption,
+                                        onClick = {
+                                            senderScope = scopeOption
+                                            prefs.notificationSenderScope = scopeOption
+                                        },
+                                        colors = RadioButtonDefaults.colors(selectedColor = LineGreen)
+                                    )
+                                    Column(modifier = Modifier.padding(start = 4.dp)) {
+                                        Text(scopeOption.label, fontSize = 15.sp, color = nuruColors.textPrimary)
+                                        Text(scopeOption.description, fontSize = 11.sp, color = nuruColors.textSecondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = nuruColors.bgPrimary
+        ) {
+            Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+                // ─── ヘッダー ───────────────────────────────────────────
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.Close, "Close", tint = MaterialTheme.colorScheme.onBackground)
+                    }
+                    Text(
+                        "Notifications",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.weight(1f).padding(start = 4.dp)
+                    )
+                    IconButton(onClick = { showKindSettings = true }) {
+                        Icon(Icons.Outlined.Settings, "Notification settings", tint = nuruColors.textSecondary)
+                    }
+                }
+                HorizontalDivider(color = nuruColors.border, thickness = 0.5.dp)
+
+                // ─── コンテンツ ─────────────────────────────────────────
+                Box(modifier = Modifier.fillMaxSize()
+                    .nestedScroll(pullRefreshState.nestedScrollConnection)
+                    .clipToBounds()) {
+                    when {
+                        loading -> {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = LineGreen)
+                            }
+                        }
+                        notifications.isEmpty() -> {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                item {
+                                    Column(
+                                        modifier = Modifier.fillParentMaxHeight().fillMaxWidth().padding(32.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Spacer(Modifier.height(64.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .size(72.dp)
+                                                .background(nuruColors.bgSecondary, CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Notifications,
+                                                null,
+                                                modifier = Modifier.size(36.dp),
+                                                tint = nuruColors.textTertiary
+                                            )
+                                        }
+                                        Spacer(Modifier.height(16.dp))
+                                        Text("No notifications yet", color = nuruColors.textSecondary, fontSize = 15.sp)
+                                        Text(
+                                            "They'll appear here when you get reactions or replies",
+                                            color = nuruColors.textTertiary,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        else -> {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                items(notifications, key = { it.id }) { notification ->
+                                    NotificationRow(
+                                        notification = notification,
+                                        profile = profiles[notification.pubkey],
+                                        originalPost = originalPosts[notification.targetEventId],
+                                        onProfileClick = onProfileClick,
+                                        onNoteClick = onNoteClick
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    PullToRefreshContainer(
+                        state = pullRefreshState,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                        containerColor = if (pullRefreshState.isRefreshing || pullRefreshState.progress > 0f) nuruColors.bgSecondary else Color.Transparent,
+                        contentColor = LineGreen
+                    )
+
+                    // ─── 新着ピル ───────────────────────────────────────
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        AnimatedVisibility(
+                            visible = pendingNew.isNotEmpty(),
+                            enter = fadeIn() + slideInVertically { -it },
+                            exit = fadeOut() + slideOutVertically { -it }
+                        ) {
+                            Surface(
+                                onClick = {
+                                    notifications = (pendingNew + notifications).distinctBy { it.id }
+                                    pendingNew = emptyList()
+                                    scope.launch { listState.animateScrollToItem(0) }
+                                },
+                                shape = RoundedCornerShape(20.dp),
+                                color = LineGreen,
+                                shadowElevation = 8.dp
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    val avatarUrls = pendingNew
+                                        .mapNotNull { profiles[it.pubkey]?.picture }
+                                        .distinct()
+                                        .take(3)
+                                    if (avatarUrls.isNotEmpty()) {
+                                        Box(Modifier.height(22.dp).width((avatarUrls.size * 16 + 6).dp)) {
+                                            avatarUrls.forEachIndexed { i, url ->
+                                                UserAvatar(
+                                                    pictureUrl = url,
+                                                    displayName = "",
+                                                    size = 22.dp,
+                                                    modifier = Modifier.offset(x = (i * 16).dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Icon(Icons.Default.Notifications, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                    Text(
+                                        "${pendingNew.size} new",
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Icon(Icons.Default.KeyboardArrowUp, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// 各Notifications行
+// ───────────────────────────────────────────────────────────────────────────
+@Composable
+private fun NotificationSwitchRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val nuruColors = LocalNuruColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, fontSize = 15.sp, color = nuruColors.textPrimary)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = LineGreen)
+        )
+    }
+}
+
+@Composable
+fun NotificationRow(
+    notification: NotificationItem,
+    profile: UserProfile?,
+    originalPost: NostrEvent?,
+    onProfileClick: (String) -> Unit,
+    onNoteClick: (String, ScoredPost?) -> Unit = { _, _ -> }
+) {
+    val nuruColors = LocalNuruColors.current
+    val style = styleFor(notification.type)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                val targetId = when (notification.type) {
+                    "follow", "badge", "birthday" -> null
+                    else -> notification.targetEventId ?: originalPost?.id
+                }
+                if (!targetId.isNullOrBlank()) {
+                    onNoteClick(targetId, originalPost?.let { ScoredPost(event = it) })
+                } else onProfileClick(notification.pubkey)
+            }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        // ─── 左カラム: アイコン付きアバター ───────────────────────────
+        Box(modifier = Modifier.size(46.dp)) {
+            AsyncImage(
+                model = profile?.picture,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(nuruColors.bgTertiary),
+                contentScale = ContentScale.Crop
+            )
+            // タイプアイコンBadges（右下）
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .align(Alignment.BottomEnd)
+                    .background(style.color, CircleShape)
+                    .clip(CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                if (notification.type == "reaction" && notification.emojiUrl != null) {
+                    AsyncImage(
+                        model = notification.emojiUrl,
+                        contentDescription = null,
+                        modifier = Modifier.size(13.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = style.icon,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(11.dp)
+                    )
+                }
+            }
+        }
+
+        // ─── 右カラム: テキスト内容 ───────────────────────────────────
+        Column(modifier = Modifier.weight(1f)) {
+            // Name + 相対時刻
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = profile?.displayedName ?: "Unknown",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Text(
+                    text = formatPostTimestamp(notification.createdAt),
+                    fontSize = 11.sp,
+                    color = nuruColors.textTertiary,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+
+            Spacer(Modifier.height(3.dp))
+
+            // アクション説明
+            when (notification.type) {
+                "reaction", "emoji_reaction" -> {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        if (notification.emojiUrl != null) {
+                            AsyncImage(
+                                model = notification.emojiUrl,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        } else {
+                            Text(
+                                text = when (notification.reactionEmoji) {
+                                    "+", null -> "👍"
+                                    "-" -> "👎"
+                                    else -> notification.reactionEmoji!!
+                                },
+                                fontSize = 15.sp
+                            )
+                        }
+                        Text(style.label, fontSize = 13.sp, color = nuruColors.textSecondary)
+                    }
+                }
+                "badge" -> {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("🏅", fontSize = 15.sp)
+                        Text("You received a badge", fontSize = 13.sp, color = nuruColors.textSecondary)
+                    }
+                    if (!notification.comment.isNullOrBlank()) {
+                        Text(
+                            notification.comment,
+                            fontSize = 12.sp,
+                            color = nuruColors.textTertiary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+                "zap" -> {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "⚡ ₿${notification.amount ?: 0}",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFFC107),
+                            fontSize = 13.sp
+                        )
+                        Text("Zap", fontSize = 13.sp, color = nuruColors.textSecondary)
+                    }
+                    if (!notification.comment.isNullOrBlank()) {
+                        Text(
+                            notification.comment,
+                            fontSize = 12.sp,
+                            color = nuruColors.textSecondary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
+                }
+                "reply", "mention" -> {
+                    Text(style.label, fontSize = 13.sp, color = nuruColors.textSecondary)
+                    if (!notification.comment.isNullOrBlank()) {
+                        Text(
+                            notification.comment,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.85f),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
+                }
+                else -> Text(style.label, fontSize = 13.sp, color = nuruColors.textSecondary)
+            }
+
+            // 対象Postsプレビュー（Reply/Reactions/Reposts用）
+            if (originalPost != null && notification.type in listOf("reaction", "emoji_reaction", "repost", "zap")) {
+                val previewText = removeImageUrls(originalPost.content).take(100).trim()
+                if (previewText.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(nuruColors.bgSecondary)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(36.dp)
+                                .background(LineGreen, RoundedCornerShape(2.dp))
+                        )
+                        Text(
+                            previewText,
+                            fontSize = 12.sp,
+                            color = nuruColors.textSecondary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+    HorizontalDivider(
+        color = nuruColors.border.copy(alpha = 0.5f),
+        thickness = 0.5.dp,
+        modifier = Modifier.padding(start = 74.dp)
+    )
+}

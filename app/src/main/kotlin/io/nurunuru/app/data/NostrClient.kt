@@ -1,0 +1,414 @@
+package io.nurunuru.app.data
+
+import android.content.Context
+import android.util.Log
+import io.nurunuru.app.data.models.NostrEvent
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.*
+import rust.nostr.sdk.PublicKey
+import uniffi.nurunuru.FfiAddMemberResult
+import uniffi.nurunuru.FfiDecryptedMessage
+import uniffi.nurunuru.FfiEncryptedMessageData
+import uniffi.nurunuru.FfiKeyPackageEventData
+import uniffi.nurunuru.FfiMlsGroupInfo
+import uniffi.nurunuru.FfiScoredPost
+import uniffi.nurunuru.FfiUserProfile
+import uniffi.nurunuru.NuruNuruClient
+import java.util.concurrent.ConcurrentHashMap
+
+private const val TAG = "NostrClient"
+
+/**
+ * Nostr client powered by the NuruNuru Rust Core.
+ */
+class NostrClient(
+    private val context: Context,
+    private val relays: List<String>,
+    private val signer: AppSigner
+) {
+    companion object {
+        /** NIP-50 search relay (synced with web: lib/nostr.js SEARCH_RELAY) */
+        const val SEARCH_RELAY = "wss://search.nos.today"
+    }
+
+    private var sdkClient: NuruNuruClient? = null
+    private val _isReady = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val isReady = _isReady.asStateFlow()
+
+    private val publicKeyHex = signer.getPublicKeyHex()
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private val _events = MutableSharedFlow<NostrEvent>(extraBufferCapacity = 100)
+    val events: SharedFlow<NostrEvent> = _events.asSharedFlow()
+
+    private val subscriptionCallbacks = ConcurrentHashMap<String, (NostrEvent) -> Unit>()
+
+    // ─── Connection ───────────────────────────────────────────────────────────
+
+    fun getSigner(): AppSigner = signer
+
+    fun getRustClient(): NuruNuruClient? = sdkClient
+
+    fun connect() {
+        scope.launch {
+            try {
+                val client = if (signer is InternalSigner) {
+                    val keyHex = privateKeyHexForSdk()
+                    if (keyHex.isNullOrEmpty()) {
+                        Log.e(TAG, "Key not available from SecureKeyManager, cannot initialize Rust Client")
+                        return@launch
+                    }
+                    // Issue #181: derive the SQLCipher key via HKDF(nsec, APP_SALT)
+                    // and pass it to the *encrypted* ctor. Zeroize after handoff.
+                    val dbKey = MlsDbKeyStore.deriveInternalKey(keyHex)
+                    try {
+                        NuruNuruClient.newWithMlsDbKey(keyHex, dbKey)
+                    } finally {
+                        dbKey.fill(0)
+                    }
+                } else {
+                    // Normalise pubkey to 64-char lowercase hex.
+                    // prefs may store npub1... bech32 if the login flow stored it
+                    // that way, or it may have been set from Amber as hex already.
+                    val hexPubkey = if (publicKeyHex.startsWith("npub1")) {
+                        try {
+                            PublicKey.parse(publicKeyHex).toHex()
+                        } catch (_: Exception) { publicKeyHex }
+                    } else {
+                        publicKeyHex
+                    }
+                    if (hexPubkey.length != 64 || hexPubkey.any { it !in '0'..'9' && it !in 'a'..'f' && it !in 'A'..'F' }) {
+                        Log.e(TAG, "Invalid pubkey for Rust client (len=${hexPubkey.length})")
+                        return@launch
+                    }
+                    // External-signer path: no nsec available; use a
+                    // random pubkey-scoped key persisted in EncryptedSharedPreferences.
+                    val dbKey = MlsDbKeyStore.getOrCreateExternalKey(context, hexPubkey.lowercase())
+                    try {
+                        NuruNuruClient.newReadOnlyWithMlsDbKey(hexPubkey, dbKey)
+                    } finally {
+                        dbKey.fill(0)
+                    }
+                }
+
+                sdkClient = client
+                _isReady.value = true
+
+                // Issue #181 B7: assert the engine actually opened the MLS DB
+                // under SQLCipher. Any other state (None / false) means the
+                // encrypted bind silently fell back or never ran — refuse to
+                // proceed so a regression cannot ship plaintext to users.
+                val encState = client.mlsIsEncrypted()
+                if (encState == true) {
+                    Log.i(TAG, "MLS DB encrypted (SQLCipher) — issue #181 guard OK")
+                } else {
+                    Log.e(TAG, "MLS DB encryption check FAILED (mlsIsEncrypted=$encState) — aborting client init")
+                    sdkClient = null
+                    _isReady.value = false
+                    try { client.disconnect() } catch (_: Exception) { }
+                    return@launch
+                }
+
+                client.connect()
+
+                Log.d(TAG, "NuruNuru Rust Client connected")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize NuruNuru Rust Client", e)
+            }
+        }
+    }
+
+    private fun privateKeyHexForSdk(): String? {
+        return (signer as? InternalSigner)?.getKeyHexFromManager()
+    }
+
+    // signAndSend removed — all publishing now goes through rustClient directly
+
+    private suspend fun ensureClient(): NuruNuruClient? {
+        if (sdkClient == null) {
+            withTimeoutOrNull(5000) {
+                isReady.filter { it }.first()
+            }
+        }
+        return sdkClient
+    }
+
+    fun disconnect() {
+        scope.launch {
+            sdkClient?.disconnect()
+            sdkClient = null
+            scope.cancel()
+        }
+    }
+
+    // ─── Subscriptions ────────────────────────────────────────────────────────
+
+    data class Filter(
+        val ids: List<String>? = null,
+        val authors: List<String>? = null,
+        val kinds: List<Int>? = null,
+        val tags: Map<String, List<String>>? = null,
+        val since: Long? = null,
+        val until: Long? = null,
+        val limit: Int? = null,
+        val search: String? = null
+    )
+
+    fun subscribe(subId: String, filter: Filter, onEvent: (NostrEvent) -> Unit) {
+        subscriptionCallbacks[subId] = onEvent
+        // TODO: Bridge with Rust core stream subscription
+    }
+
+    fun unsubscribe(subId: String) {
+        subscriptionCallbacks.remove(subId)
+    }
+
+    // ─── One-shot Fetch ──────────────────────────────────────────────────────
+
+    suspend fun fetchEvents(filter: Filter, timeoutMs: Long = 5_000): List<NostrEvent> {
+        return withContext(Dispatchers.IO) {
+            val client = ensureClient() ?: return@withContext emptyList()
+            try {
+                val filterJson = buildFilterJson(filter)
+                val timeoutSecs = ((timeoutMs + 999) / 1000).toUInt()
+                val eventsJson = client.fetchEventsFromRelay(filterJson, timeoutSecs)
+                eventsJson.map { Json { ignoreUnknownKeys = true }.decodeFromString<NostrEvent>(it) }
+            } catch (e: Exception) {
+                Log.w(TAG, "Fetch events failed: ${e.message}")
+                emptyList()
+            }
+        }
+    }
+
+    /**
+     * Fetch events from specific relays only.
+     *
+     * Automatically adds and connects to relays not yet in the pool.
+     * Falls back to [fetchEvents] (all relays) if the relay list is empty.
+     */
+    suspend fun fetchEventsFrom(
+        relayUrls: List<String>,
+        filter: Filter,
+        timeoutMs: Long = 5_000
+    ): List<NostrEvent> {
+        if (relayUrls.isEmpty()) return fetchEvents(filter, timeoutMs)
+        return withContext(Dispatchers.IO) {
+            val client = ensureClient() ?: return@withContext emptyList()
+            try {
+                val filterJson = buildFilterJson(filter)
+                val timeoutSecs = ((timeoutMs + 999) / 1000).toUInt()
+                val eventsJson = client.fetchEventsFromRelays(filterJson, relayUrls, timeoutSecs)
+                eventsJson.map { Json { ignoreUnknownKeys = true }.decodeFromString<NostrEvent>(it) }
+            } catch (e: Exception) {
+                Log.w(TAG, "fetchEventsFrom($relayUrls) failed: ${e.message}, falling back to all relays")
+                fetchEvents(filter, timeoutMs)
+            }
+        }
+    }
+
+    /** Dynamically add a relay and connect to it. */
+    suspend fun addRelay(url: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                ensureClient()?.addRelay(url)
+            } catch (e: Exception) {
+                Log.w(TAG, "addRelay($url) failed: ${e.message}")
+            }
+        }
+    }
+
+    /** Serialise a [Filter] to a NIP-01 JSON filter string for the Rust FFI. */
+    private fun buildFilterJson(filter: Filter): String {
+        val obj = buildJsonObject {
+            filter.ids?.takeIf { it.isNotEmpty() }?.let { ids ->
+                put("ids", buildJsonArray { ids.forEach { add(it) } })
+            }
+            filter.authors?.takeIf { it.isNotEmpty() }?.let { authors ->
+                put("authors", buildJsonArray { authors.forEach { add(it) } })
+            }
+            filter.kinds?.takeIf { it.isNotEmpty() }?.let { kinds ->
+                put("kinds", buildJsonArray { kinds.forEach { add(it) } })
+            }
+            filter.since?.let { put("since", it) }
+            filter.until?.let { put("until", it) }
+            filter.limit?.let { put("limit", it) }
+            filter.search?.let { put("search", it) }
+            // Tag filters: keys like "e","p","d" → "#e","#p","#d" in NIP-01 JSON
+            filter.tags?.forEach { (key, values) ->
+                if (values.isNotEmpty()) {
+                    put("#$key", buildJsonArray { values.forEach { add(it) } })
+                }
+            }
+        }
+        return obj.toString()
+    }
+
+    // ─── Publish ──────────────────────────────────────────────────────────────
+
+    /** Publish a pre-signed Nostr event as-is (used for backup import). */
+    suspend fun publishEvent(event: NostrEvent): Boolean {
+        return withContext(Dispatchers.IO) {
+            val client = ensureClient() ?: return@withContext false
+            try {
+                val jsonStr = Json { encodeDefaults = true }.encodeToString(event)
+                client.publishRawEvent(jsonStr)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "Publish raw event failed: ${e.message}")
+                false
+            }
+        }
+    }
+
+    fun recordEngagement(action: String, authorPubkey: String) {
+        sdkClient?.recordEngagement(action, authorPubkey)
+    }
+
+    fun markNotInterested(eventId: String, authorPubkey: String) {
+        sdkClient?.markNotInterested(eventId, authorPubkey)
+    }
+
+    // ─── DMs ─────────────────────────────────────────────────────────────────
+
+    suspend fun sendEncryptedDm(recipientPubkeyHex: String, content: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val client = ensureClient() ?: return@withContext false
+                client.sendDm(recipientPubkeyHex, content)
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
+    suspend fun decryptNip04(senderPubkeyHex: String, encryptedContent: String): String? {
+        // InternalSigner: prefer Rust FFI (same Rust crate, avoids JNI round-trip to rust-nostr-sdk)
+        if (signer is InternalSigner) {
+            sdkClient?.let { client ->
+                try { return client.nip04Decrypt(senderPubkeyHex, encryptedContent) }
+                catch (_: Exception) { /* fall through to AppSigner */ }
+            }
+        }
+        return signer.nip04Decrypt(senderPubkeyHex, encryptedContent)
+    }
+
+    suspend fun decryptNip44(senderPubkeyHex: String, encryptedContent: String): String? {
+        if (signer is InternalSigner) {
+            sdkClient?.let { client ->
+                try { return client.nip44Decrypt(senderPubkeyHex, encryptedContent) }
+                catch (_: Exception) { }
+            }
+        }
+        return signer.nip44Decrypt(senderPubkeyHex, encryptedContent)
+    }
+
+    suspend fun encryptNip04(receiverPubkeyHex: String, content: String): String? {
+        if (signer is InternalSigner) {
+            sdkClient?.let { client ->
+                try { return client.nip04Encrypt(receiverPubkeyHex, content) }
+                catch (_: Exception) { }
+            }
+        }
+        return signer.nip04Encrypt(receiverPubkeyHex, content)
+    }
+
+    suspend fun encryptNip44(receiverPubkeyHex: String, content: String): String? {
+        if (signer is InternalSigner) {
+            sdkClient?.let { client ->
+                try { return client.nip44Encrypt(receiverPubkeyHex, content) }
+                catch (_: Exception) { }
+            }
+        }
+        return signer.nip44Encrypt(receiverPubkeyHex, content)
+    }
+
+    // ─── MLS / NIP-EE ────────────────────────────────────────────────────────
+
+    suspend fun mlsCreateKeyPackage(): FfiKeyPackageEventData? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsCreateKeyPackage() }
+            catch (e: Exception) { Log.w(TAG, "mlsCreateKeyPackage failed: ${e.message}"); null }
+        }
+    }
+
+    suspend fun mlsCreateGroup(
+        name: String,
+        adminPubkeys: List<String>,
+        relays: List<String>
+    ): FfiMlsGroupInfo? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsCreateGroup(name, adminPubkeys, relays) }
+            catch (e: Exception) { Log.w(TAG, "mlsCreateGroup failed: ${e.message}"); null }
+        }
+    }
+
+    suspend fun mlsAddMember(
+        groupIdHex: String,
+        keyPackageEventJson: String
+    ): FfiAddMemberResult? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsAddMember(groupIdHex, keyPackageEventJson) }
+            catch (e: Exception) { Log.w(TAG, "mlsAddMember failed: ${e.message}"); null }
+        }
+    }
+
+    suspend fun mlsGetMessageHistory(groupIdHex: String, limit: Long = 200L): List<FfiDecryptedMessage> {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsGetMessageHistory(groupIdHex, limit.toULong()) ?: emptyList() }
+            catch (e: Exception) { Log.w(TAG, "mlsGetMessageHistory failed: ${e.message}"); emptyList() }
+        }
+    }
+
+    suspend fun mlsListGroups(): List<FfiMlsGroupInfo> {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsListGroups() ?: emptyList() }
+            catch (e: Exception) { Log.w(TAG, "mlsListGroups failed: ${e.message}"); emptyList() }
+        }
+    }
+
+    suspend fun mlsGetGroupInfo(groupIdHex: String): FfiMlsGroupInfo? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsGetGroupInfo(groupIdHex) }
+            catch (e: Exception) { Log.w(TAG, "mlsGetGroupInfo failed: ${e.message}"); null }
+        }
+    }
+
+    suspend fun mlsLeaveGroup(groupIdHex: String): FfiEncryptedMessageData? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsLeaveGroup(groupIdHex) }
+            catch (e: Exception) { Log.w(TAG, "mlsLeaveGroup failed: ${e.message}"); null }
+        }
+    }
+
+    suspend fun mlsRemoveMember(groupIdHex: String, memberPubkey: String): FfiEncryptedMessageData? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsRemoveMember(groupIdHex, memberPubkey) }
+            catch (e: Exception) { Log.w(TAG, "mlsRemoveMember failed: ${e.message}"); null }
+        }
+    }
+
+    suspend fun mlsCreateMessage(groupIdHex: String, content: String): FfiEncryptedMessageData? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsCreateMessage(groupIdHex, content) }
+            catch (e: Exception) { Log.w(TAG, "mlsCreateMessage failed: ${e.message}"); null }
+        }
+    }
+
+    suspend fun mlsProcessMessage(groupIdHex: String, eventJson: String): FfiDecryptedMessage? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsProcessMessage(groupIdHex, eventJson) }
+            catch (e: Exception) { Log.w(TAG, "mlsProcessMessage failed: ${e.message}"); null }
+        }
+    }
+
+    suspend fun mlsProcessWelcome(welcomeEventJson: String): FfiMlsGroupInfo? {
+        return withContext(Dispatchers.IO) {
+            try { ensureClient()?.mlsProcessWelcome(welcomeEventJson) }
+            catch (e: Exception) { Log.w(TAG, "mlsProcessWelcome failed: ${e.message}"); null }
+        }
+    }
+}

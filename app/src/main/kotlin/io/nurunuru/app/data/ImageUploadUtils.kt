@@ -1,0 +1,232 @@
+package io.nurunuru.app.data
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
+import rust.nostr.sdk.*
+
+object ImageUploadUtils {
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private fun stripImageMetadata(fileBytes: ByteArray, mimeType: String): Pair<ByteArray, String> {
+        if (!mimeType.startsWith("image/")) return fileBytes to mimeType
+        return try {
+            val bitmap = BitmapFactory.decodeByteArray(fileBytes, 0, fileBytes.size) ?: return fileBytes to mimeType
+            val out = java.io.ByteArrayOutputStream()
+            val format = if (mimeType.equals("image/png", ignoreCase = true)) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+            val ok = bitmap.compress(format, 88, out)
+            if (!ok) return fileBytes to mimeType
+            val clean = out.toByteArray()
+            val cleanMime = if (format == Bitmap.CompressFormat.PNG) "image/png" else "image/jpeg"
+            if (clean.size > fileBytes.size) {
+                Log.d("ImageUploadUtils", "Metadata-stripped image is larger (${fileBytes.size} -> ${clean.size}); keeping stripped bytes")
+            }
+            clean to cleanMime
+        } catch (e: Exception) {
+            Log.w("ImageUploadUtils", "Failed to strip image metadata", e)
+            fileBytes to mimeType
+        }
+    }
+
+
+    suspend fun uploadToBlossom(
+        fileBytes: ByteArray,
+        mimeType: String,
+        signer: AppSigner?,
+        blossomUrl: String = "https://blossom.nostr.build"
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            val (cleanBytes, cleanMimeType) = stripImageMetadata(fileBytes, mimeType)
+            val requestBuilder = okhttp3.Request.Builder()
+                .url("$blossomUrl/upload")
+                .put(cleanBytes.toRequestBody(cleanMimeType.toMediaTypeOrNull()))
+
+            // Blossom NIP-98 Auth (Kind 24242)
+            if (signer != null) {
+                val hash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(cleanBytes)
+                    .joinToString("") { "%02x".format(it) }
+
+                val now = System.currentTimeMillis() / 1000
+                val authEventBuilder = EventBuilder(Kind(24242u), "Upload to Blossom")
+                    .tags(listOf(
+                        Tag.parse(listOf("t", "upload")),
+                        Tag.parse(listOf("x", hash)),
+                        Tag.parse(listOf("expiration", (now + 300).toString()))
+                    ))
+
+                val publicKey = PublicKey.parse(signer.getPublicKeyHex())
+                val unsignedEvent = authEventBuilder.build(publicKey)
+                val signedJson = signer.signEvent(unsignedEvent.asJson()) ?: return@withContext null
+                val authHeader = Base64.encodeToString(signedJson.toByteArray(), Base64.NO_WRAP)
+                requestBuilder.addHeader("Authorization", "Nostr $authHeader")
+            }
+
+            val request = requestBuilder.build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string() ?: return@withContext null
+                val root = json.parseToJsonElement(body).jsonObject
+                return@withContext root["url"]?.jsonPrimitive?.content
+            }
+        } catch (e: Exception) {
+            Log.e("ImageUploadUtils", "Blossom upload failed", e)
+            null
+        }
+    }
+
+    suspend fun uploadToNostrBuild(
+        fileBytes: ByteArray,
+        mimeType: String,
+        signer: AppSigner? = null
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            val (cleanBytes, cleanMimeType) = stripImageMetadata(fileBytes, mimeType)
+            val url = "https://nostr.build/api/v2/upload/files"
+            val requestBuilder = okhttp3.Request.Builder().url(url)
+
+            // Optional NIP-98 Auth
+            if (signer != null) {
+                try {
+                    val authEventBuilder = EventBuilder(Kind(27235u), "")
+                        .tags(listOf(
+                            Tag.parse(listOf("u", url)),
+                            Tag.parse(listOf("method", "POST"))
+                        ))
+
+                    val publicKey = PublicKey.parse(signer.getPublicKeyHex())
+                    val unsignedEvent = authEventBuilder.build(publicKey)
+                    val signedJson = signer.signEvent(unsignedEvent.asJson()) ?: throw Exception("Signing failed")
+                    val authHeader = Base64.encodeToString(signedJson.toByteArray(), Base64.NO_WRAP)
+                    requestBuilder.addHeader("Authorization", "Nostr $authHeader")
+                } catch (e: Exception) {
+                    Log.w("ImageUploadUtils", "Failed to create NIP-98 header", e)
+                }
+            }
+
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(
+                    "file",
+                    "image.${cleanMimeType.split("/").last()}",
+                    cleanBytes.toRequestBody(cleanMimeType.toMediaTypeOrNull())
+                )
+                .build()
+
+            val request = requestBuilder
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    Log.w("ImageUploadUtils", "Upload failed: ${response.code} ${response.message}")
+                    return@withContext null
+                }
+
+                Log.d("ImageUploadUtils", "Upload response: ${response.code}")
+                val root = json.parseToJsonElement(body).jsonObject
+
+                // nostr.build V2 response handling
+                if (root["status"]?.jsonPrimitive?.content == "success") {
+                    val data = root["data"]?.jsonArray?.getOrNull(0)?.jsonObject
+                    return@withContext data?.get("url")?.jsonPrimitive?.content
+                } else {
+                    // Fallback for different response formats or errors
+                    Log.w("ImageUploadUtils", "Upload status not success: ${response.code}")
+                    val url = root["url"]?.jsonPrimitive?.content
+                    if (url != null) return@withContext url
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("ImageUploadUtils", "Upload failed", e)
+        }
+        null
+    }
+
+    suspend fun uploadToYabuMe(
+        fileBytes: ByteArray,
+        mimeType: String,
+        signer: AppSigner? = null,
+        baseUrl: String = "https://share.yabu.me"
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            val (cleanBytes, cleanMimeType) = stripImageMetadata(fileBytes, mimeType)
+            val endpoint = if (baseUrl.startsWith("http")) {
+                if (baseUrl.endsWith("/api/v2/media")) baseUrl else "${baseUrl.removeSuffix("/")}/api/v2/media"
+            } else {
+                "https://$baseUrl/api/v2/media"
+            }
+            val requestBuilder = okhttp3.Request.Builder().url(endpoint)
+
+            if (signer != null) {
+                try {
+                    val authEventBuilder = EventBuilder(Kind(27235u), "")
+                        .tags(listOf(
+                            Tag.parse(listOf("u", endpoint)),
+                            Tag.parse(listOf("method", "POST"))
+                        ))
+
+                    val publicKey = PublicKey.parse(signer.getPublicKeyHex())
+                    val unsignedEvent = authEventBuilder.build(publicKey)
+                    val signedJson = signer.signEvent(unsignedEvent.asJson()) ?: throw Exception("Signing failed")
+                    val authHeader = Base64.encodeToString(signedJson.toByteArray(), Base64.NO_WRAP)
+                    requestBuilder.addHeader("Authorization", "Nostr $authHeader")
+                } catch (e: Exception) {
+                    Log.w("ImageUploadUtils", "Failed to create NIP-98 header for Yabu", e)
+                }
+            }
+
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(
+                    "file",
+                    "image.${cleanMimeType.split("/").last()}",
+                    cleanBytes.toRequestBody(cleanMimeType.toMediaTypeOrNull())
+                )
+                .build()
+
+            val request = requestBuilder
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    Log.w("ImageUploadUtils", "Yabu upload failed: ${response.code}")
+                    return@withContext null
+                }
+
+                val root = json.parseToJsonElement(body).jsonObject
+                if (root["status"]?.jsonPrimitive?.content == "success") {
+                    val nip94 = root["nip94_event"]?.jsonObject
+                    val tags = nip94?.get("tags")?.jsonArray
+                    val urlTag = tags?.find {
+                        it.jsonArray.getOrNull(0)?.jsonPrimitive?.content == "url"
+                    }?.jsonArray
+                    return@withContext urlTag?.getOrNull(1)?.jsonPrimitive?.content
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("ImageUploadUtils", "Yabu upload failed", e)
+        }
+        null
+    }
+}

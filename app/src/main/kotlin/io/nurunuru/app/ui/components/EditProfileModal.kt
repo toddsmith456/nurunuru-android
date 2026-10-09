@@ -1,0 +1,193 @@
+package io.nurunuru.app.ui.components
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import io.nurunuru.app.data.models.UserProfile
+import io.nurunuru.app.ui.theme.*
+import io.nurunuru.app.viewmodel.HomeViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditProfileModal(
+    profile: UserProfile,
+    onDismiss: () -> Unit,
+    onSave: (UserProfile) -> Unit,
+    viewModel: HomeViewModel
+) {
+    var name by remember { mutableStateOf(profile.name ?: "") }
+    var about by remember { mutableStateOf(profile.about ?: "") }
+    var picture by remember { mutableStateOf(profile.picture ?: "") }
+    var banner by remember { mutableStateOf(profile.banner ?: "") }
+    var nip05 by remember { mutableStateOf(profile.nip05 ?: "") }
+    var lud16 by remember { mutableStateOf(profile.lud16 ?: "") }
+    var website by remember { mutableStateOf(profile.website ?: "") }
+    var birthday by remember { mutableStateOf(profile.birthday ?: "") }
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var isUploadingPicture by remember { mutableStateOf(false) }
+    var isUploadingBanner by remember { mutableStateOf(false) }
+    val isUploading = isUploadingPicture || isUploadingBanner
+
+    val imageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let {
+            scope.launch {
+                isUploadingPicture = true
+                try {
+                    val (bytes, mimeType) = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(it)?.readBytes() to
+                            (context.contentResolver.getType(it) ?: "image/jpeg")
+                    }
+                    val url = viewModel.uploadImage(bytes ?: byteArrayOf(), mimeType)
+                    if (url != null) picture = url
+                } catch (e: Exception) {
+                    android.util.Log.w("EditProfileModal", "Picture upload failed: ${e.message}")
+                } finally {
+                    isUploadingPicture = false
+                }
+            }
+        }
+    }
+
+    val bannerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let {
+            scope.launch {
+                isUploadingBanner = true
+                try {
+                    val (bytes, mimeType) = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(it)?.readBytes() to
+                            (context.contentResolver.getType(it) ?: "image/jpeg")
+                    }
+                    val url = viewModel.uploadImage(bytes ?: byteArrayOf(), mimeType)
+                    if (url != null) banner = url
+                } catch (e: Exception) {
+                    android.util.Log.w("EditProfileModal", "Banner upload failed: ${e.message}")
+                } finally {
+                    isUploadingBanner = false
+                }
+            }
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color.Black,
+        dragHandle = null
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.9f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss) { Text("Cancel", color = TextSecondary) }
+                Text("Edit profile", fontWeight = FontWeight.Bold, color = TextPrimary)
+                TextButton(onClick = { onSave(profile.copy(name=name, about=about, picture=picture, banner=banner, nip05=nip05, lud16=lud16, website=website, birthday=birthday)) }, enabled = !isUploading) {
+                    if (isUploading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = LineGreen)
+                    else Text("Save", color = LineGreen, fontWeight = FontWeight.Bold)
+                }
+            }
+            HorizontalDivider(color = BorderColor, thickness = 0.5.dp)
+
+            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                ProfileEditField("Name", name, { name = it }, "Display name")
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Avatar image", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.weight(1f)) { NuruTextField(picture, { picture = it }, "https://...", singleLine = true) }
+                        IconButton(
+                            onClick = { imageLauncher.launch("image/*") },
+                            enabled = !isUploading,
+                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)).background(BgTertiary)
+                        ) {
+                            if (isUploadingPicture) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = LineGreen)
+                            else Icon(Icons.Default.FileUpload, null, tint = TextPrimary)
+                        }
+                    }
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Banner image", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.weight(1f)) { NuruTextField(banner, { banner = it }, "https://...", singleLine = true) }
+                        IconButton(
+                            onClick = { bannerLauncher.launch("image/*") },
+                            enabled = !isUploading,
+                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)).background(BgTertiary)
+                        ) {
+                            if (isUploadingBanner) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = LineGreen)
+                            else Icon(Icons.Default.FileUpload, null, tint = TextPrimary)
+                        }
+                    }
+                }
+
+                ProfileEditField("Bio", about, { about = it }, "Bio", minLines = 3)
+                ProfileEditField("NIP-05", nip05, { nip05 = it }, "name@example.com")
+                ProfileEditField("Lightning address", lud16, { lud16 = it }, "you@wallet.com")
+                ProfileEditField("Website", website, { website = it }, "https://example.com")
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ProfileEditField("Birthday", birthday, { birthday = it }, "MM-DD or YYYY-MM-DD")
+                    Text("e.g. 01-15 or 2000-01-15", fontSize = 12.sp, color = TextTertiary)
+                }
+                Spacer(Modifier.height(40.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun ProfileEditField(label: String, value: String, onValueChange: (String) -> Unit, placeholder: String, minLines: Int = 1) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        NuruTextField(value, onValueChange, placeholder, minLines)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NuruTextField(value: String, onValueChange: (String) -> Unit, placeholder: String, minLines: Int = 1, singleLine: Boolean = false) {
+    TextField(
+        value = value,
+        onValueChange = onValueChange,
+        placeholder = { Text(placeholder, color = TextTertiary, fontSize = 14.sp) },
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).border(0.5.dp, BorderColor, RoundedCornerShape(8.dp)),
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = BgTertiary,
+            unfocusedContainerColor = BgSecondary,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            disabledIndicatorColor = Color.Transparent,
+            cursorColor = LineGreen,
+            focusedTextColor = TextPrimary,
+            unfocusedTextColor = TextPrimary
+        ),
+        textStyle = TextStyle(fontSize = 14.sp),
+        minLines = minLines,
+        singleLine = singleLine,
+        maxLines = if (singleLine) 1 else Int.MAX_VALUE
+    )
+}

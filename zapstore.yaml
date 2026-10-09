@@ -1,0 +1,52 @@
+# zapstore.yaml - Nurunuru Nostr Client (Android)
+# https://zapstore.dev/docs/publish
+
+name: Nurunuru
+summary: A Nostr client with a fast, reliable timeline
+version: 1.5.4
+
+description: |
+  Nurunuru is a simple, easy-to-use Nostr client.
+
+  📱 Timeline
+  Network-first, fast timeline with follow / relay views, infinite scroll,
+  and loading of older posts using NIP-65 relay hints.
+  Images, videos, custom emoji, long-form articles, and reposts are shown
+  in a natural chronological order. The Home tab switches between your
+  posts and your likes.
+
+  ✍️ Posting
+  Upload up to 3 images at once. Choose the relays to post to each time.
+
+  💬 Chat
+  E2E-encrypted direct messages and group chats (NIP-EE / MLS).
+  Older DMs can still be read.
+
+  ⚡ Zap
+  Fetch an invoice from a recipient's Lightning address and copy it to the
+  clipboard. Pay it with an external wallet.
+
+  🔍 Search
+  Full-text search with commands such as #tag, from:npub, and filter:image.
+
+  🧩 Mini-apps
+  Custom emoji, profile badges, relay settings, mute list, Zap settings,
+  scheduling, voice input settings, backup, deletion requests, and cache settings.
+
+  🔑 Login
+  Supports nsec keys and external signer apps (Amber).
+
+repository: https://github.com/toddsmith456/nurunuru-android
+license: Unlicense
+tags:
+  - nostr
+  - social
+  - messaging
+
+icon: assets/icon-512.png
+
+# GitHub release asset matching
+match: nurunuru-.*-arm64-v8a.apk
+
+metadata_sources:
+  - github
