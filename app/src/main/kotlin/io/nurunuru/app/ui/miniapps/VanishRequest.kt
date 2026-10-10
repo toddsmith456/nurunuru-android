@@ -200,7 +200,7 @@ fun VanishRequest(
                 OutlinedTextField(
                     value = vanishConfirm,
                     onValueChange = { vanishConfirm = it },
-                    placeholder = { Text("Type "Delete" to confirm", fontSize = 14.sp) },
+                    placeholder = { Text("Type \"Delete\" to confirm", fontSize = 14.sp) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     singleLine = true,

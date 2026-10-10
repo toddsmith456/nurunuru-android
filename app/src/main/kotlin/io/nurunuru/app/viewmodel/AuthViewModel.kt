@@ -361,7 +361,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
      * NewチュートリアルPosts。
      * オンボーディング最終段階で kind:1 ノートを発行する。
      *
-     * - Bodyは UI 側 (TutorialStep) で既定として `\n#Joined nostr` が pre-fill されており、
+     * - Bodyは UI 側 (TutorialStep) で既定として `\n#nostrはじめました` が pre-fill されており、
      *   ユーザーがそのままPostsすればハッシュタグ付きでSendされる。
      * - ユーザーが意図的にハッシュタグ行をDeleteした場合は、Deleteした状態のままSendする。
      *   この関数はBodyへの自動補完・末尾付与を一切行わない (「勝手に付けられた」を回避する規約)。
@@ -378,7 +378,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         relays: List<Triple<String, Boolean, Boolean>>? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            // Bodyは UI 側で pre-fill 済み (`\n#Joined nostr`)。
+            // Bodyは UI 側で pre-fill 済み (`\n#nostrはじめました`)。
             // ユーザーが意図的にハッシュタグを消した場合は、消した状態のままSendする
             // (自動補完・末尾付与は一切行わない。3 プラットフォーム共通の規約)。
             // trim せず原文をSendして、pre-fill 由来の先頭改行を尊重する。

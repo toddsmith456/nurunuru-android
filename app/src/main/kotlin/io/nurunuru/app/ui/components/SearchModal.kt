@@ -204,7 +204,7 @@ fun SearchModal(
                             }
                             Spacer(Modifier.height(16.dp))
                             Text(
-                                "No results found for "${uiState.searchQuery}"",
+                                "No results found for \"${uiState.searchQuery}\"",
                                 color = nuruColors.textSecondary,
                                 textAlign = TextAlign.Center,
                                 fontSize = 14.sp

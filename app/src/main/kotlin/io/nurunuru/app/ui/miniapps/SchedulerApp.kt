@@ -150,7 +150,7 @@ fun SchedulerApp(
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("No events", color = nuruColors.textTertiary, fontSize = 16.sp)
-                        Text("You can create an event with the "New" button",
+                        Text("You can create an event with the \"New\" button",
                             color = nuruColors.textTertiary, fontSize = 13.sp,
                             modifier = Modifier.padding(top = 8.dp))
                     }

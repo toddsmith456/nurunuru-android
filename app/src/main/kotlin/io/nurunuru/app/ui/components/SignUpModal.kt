@@ -52,19 +52,19 @@ import io.nurunuru.app.viewmodel.GeneratedAccount
 
 // チュートリアルPostsで使用するハッシュタグ (Web/iOS と同一)。
 //
-// 既定Bodyに `\n#Joined nostr` を pre-fill し、エディタを開いた瞬間から
+// 既定Bodyに `\n#nostrはじめました` を pre-fill し、エディタを開いた瞬間から
 // ユーザーには常にハッシュタグが見えている (「勝手に付けられた」を回避する規約)。
 // 1 行目を空にすることで、ユーザーが先頭にカーソルを置けば
-// 「Body → 改行 → #Joined nostr」の配置が自然に成立する。
+// 「Body → 改行 → #nostrはじめました」の配置が自然に成立する。
 //
 // ユーザーが意図的にハッシュタグ行を消した場合は、その状態のままPost
 // (`publishTutorialPost` は自動補完を行わない。3 プラットフォーム共通の規約)。
 //
 // プレースホルダーはBodyを全て消した時のガイドとしてのみShowされる
 // (pre-fill 時は OutlinedTextField の placeholder API 仕様により非Show)。
-private const val TUTORIAL_HASHTAG = "Joined nostr"
-private const val TUTORIAL_DEFAULT_CONTENT = "\n#Joined nostr"
-private const val TUTORIAL_PLACEHOLDER = "What's on your mind?\n#Joined nostr"
+private const val TUTORIAL_HASHTAG = "nostrはじめました"
+private const val TUTORIAL_DEFAULT_CONTENT = "\n#nostrはじめました"
+private const val TUTORIAL_PLACEHOLDER = "What's on your mind?\n#nostrはじめました"
 
 @Composable
 fun SignUpModal(
@@ -416,7 +416,7 @@ fun BackupStep(
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Back up private key", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = nuruColors.textPrimary)
         Text(
-            "This is the "private key" needed to recover your account. Never share it with anyone.",
+            "This is the \"private key\" needed to recover your account. Never share it with anyone.",
             fontSize = 13.sp,
             color = nuruColors.textSecondary,
             textAlign = TextAlign.Center
@@ -852,9 +852,9 @@ fun ProfileStep(
 }
 
 /**
- * Onboarding tutorial step — `#Joined nostr` ハッシュタグ付きで最初の kind:1 をPost。
+ * Onboarding tutorial step — `#nostrはじめました` ハッシュタグ付きで最初の kind:1 をPost。
  *
- * - 既定Body: `\n#Joined nostr` を pre-fill。エディタを開いた瞬間から
+ * - 既定Body: `\n#nostrはじめました` を pre-fill。エディタを開いた瞬間から
  *   ユーザーには常時ハッシュタグが見えている (「勝手に付けられた」を回避する規約)。
  * - ユーザーが意図的にハッシュタグ行をDeleteした場合は、その状態のままPost。
  *   `AuthViewModel.publishTutorialPost` はBodyへの自動補完・末尾付与を一切行わない。
@@ -892,7 +892,7 @@ fun TutorialStep(
     ) {
         Text("First post", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = nuruColors.textPrimary)
         Text(
-            "As a tutorial, try posting with "#Joined nostr" to say hello.",
+            "As a tutorial, try posting with \"#nostrはじめました\" to say hello.",
             fontSize = 13.sp,
             color = nuruColors.textSecondary,
             textAlign = TextAlign.Center
@@ -920,7 +920,7 @@ fun TutorialStep(
                     Text("Posted!", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = nuruColors.textPrimary)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Welcome to Nostr. Search for "#Joined nostr" on the timeline to find others who are just getting started.",
+                        "Welcome to Nostr. Search for \"#nostrはじめました\" on the timeline to find others who are just getting started.",
                         fontSize = 12.sp,
                         color = nuruColors.textSecondary
                     )
@@ -937,7 +937,7 @@ fun TutorialStep(
             Text("Next", fontWeight = FontWeight.Bold)
         }
     } else {
-        // 既定で `\n#Joined nostr` が pre-fill されているため、エディタを開いた瞬間から
+        // 既定で `\n#nostrはじめました` が pre-fill されているため、エディタを開いた瞬間から
         // ユーザーには常時ハッシュタグが見えている (「勝手に付けられた」を回避する規約)。
         // ユーザーがハッシュタグを消したら、消した状態のままPostsされる (自動補完なし)。
         // プレースホルダーはBodyを全て消した時のガイドとしてのみShowされる。
@@ -987,7 +987,7 @@ fun TutorialStep(
             colors = ButtonDefaults.buttonColors(containerColor = LineGreen),
             shape = RoundedCornerShape(16.dp),
             // Bodyが空 (trim 後 0 文字) の場合はPosts不可。
-            // pre-fill された `#Joined nostr` を残せばそのままPosts可能。
+            // pre-fill された `#nostrはじめました` を残せばそのままPosts可能。
             enabled = !isPosting && content.trim().isNotEmpty()
         ) {
             if (isPosting) {
